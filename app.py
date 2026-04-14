@@ -1,8 +1,8 @@
 import streamlit as st
 import networkx as nx
 import matplotlib.pyplot as plt
-from parse import parse_sql
-from dic_dados import SCHEMA_VENDAS
+from src.parser.parse import parse_sql
+from src.data.dic_dados import SCHEMA_VENDAS
 
 st.set_page_config(
     page_title="Processador de Consultas SQL", 
