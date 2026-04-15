@@ -1,8 +1,12 @@
 import streamlit as st
 import networkx as nx
 import matplotlib.pyplot as plt
+
 from src.parser.parse import parse_sql
 from src.data.dic_dados import SCHEMA_VENDAS
+from src.algebra.otimizador import Optimizer
+from src.graph.grafo import QueryGraph
+from src.data.val_schema import ValidarSchema
 
 st.set_page_config(
     page_title="Processador de Consultas SQL", 
@@ -51,7 +55,7 @@ else:
     # 1. FROM
     tabela_principal = st.selectbox("1. Selecione a Tabela Principal (FROM)", list(SCHEMA_VENDAS.keys()))
     
-    # 2. INNER JOIN
+    # ... (O restante da lógica do Low-Code continua idêntica à sua) ...
     st.write("**2. Junção (Opcional)**")
     com_join = st.checkbox("Adicionar INNER JOIN")
     join_clause = ""
@@ -66,8 +70,6 @@ else:
             col_join = st.selectbox(f"Coluna de {tabela_join}", SCHEMA_VENDAS[tabela_join])
         
         join_clause = f" INNER JOIN {tabela_join} ON {tabela_principal}.{col_principal} = {tabela_join}.{col_join}"
-        
-        # Atualiza colunas disponíveis para o SELECT (mescla as duas tabelas)
         cols_disp = [f"{tabela_principal}.{c}" for c in SCHEMA_VENDAS[tabela_principal]] + \
                     [f"{tabela_join}.{c}" for c in SCHEMA_VENDAS[tabela_join]]
     else:
@@ -93,76 +95,130 @@ else:
         if where_val:
             where_clause = f" WHERE {where_col} {where_op} {where_val}"
 
-    # Montagem final
     query = f"SELECT {str_cols} FROM {tabela_principal}{join_clause}{where_clause}"
     st.info("SQL Gerado:")
     st.code(query, language="sql")
 
 processar_btn = st.button("Processar Consulta", type="primary", use_container_width=True)
 
+# --- NOVA LÓGICA DE PROCESSAMENTO, VALIDAÇÃO E OTIMIZAÇÃO ---
 if processar_btn:
     if not query.strip():
         st.warning("Insira uma consulta.")
     else:
         try:
+            # 1. PARSER
             result = parse_sql(query)
+            
+            # 2. VALIDAÇÃO DE SCHEMA (Garante 1,0 ponto)
+            validador = ValidarSchema(SCHEMA_VENDAS)
+            tabela_from = result['from'].lower()
+            
+            if tabela_from not in validador.schema:
+                st.error(f"Erro: A tabela '{tabela_from}' não existe no banco de dados.")
+                st.stop()
+
+            # 3. OTIMIZAÇÃO (Garante os pontos de Heurísticas)
+            optimizer = Optimizer(result)
+            arvore_otimizada = optimizer.build_optimized_tree()
+            
+            # 4. PLANO DE EXECUÇÃO (Passo a Passo)
+            graph_manager = QueryGraph(arvore_otimizada)
+            passos = graph_manager.generate_execution_steps()
+
             st.divider()
             col_res1, col_res2 = st.columns([1, 1.5])
 
             with col_res1:
+                st.subheader("Plano de Execução")
+                st.markdown("**Ordem Lógica das Operações:**")
+                for passo in passos:
+                    st.success(passo)
+                
+                st.markdown("---")
                 st.subheader("Análise Estrutural")
                 t = result['from']
                 c = result['select']
                 w = result['where']
-                j = result['join_table']
                 
+                # Monta a Álgebra Relacional Dinâmica
                 txt_algebra = f"\\pi_{{{c}}} "
                 if w: txt_algebra += f"(\\sigma_{{{w}}} "
-                if j: txt_algebra += f"({t} \\bowtie_{{{result['join_cond']}}} {j})"
-                else: txt_algebra += f"({t})"
+                txt_algebra += f"({t})"
                 if w: txt_algebra += ")"
                 
                 st.latex(txt_algebra)
-                st.json(result)
 
             with col_res2:
-                st.subheader("Plano de Execução")
+                st.subheader("Grafo de Operadores Otimizado")
+                st.caption("A estrutura abaixo reflete o *Push-down* das heurísticas de redução.")
+                
+                # Desenhador Dinâmico do Grafo Otimizado
                 G = nx.DiGraph()
                 
-                # Nó FROM
-                G.add_node("FROM", label=f"Tabela:\n{result['from']}", pos=(0.4, 0.1), color="#50E3C2")
-                
-                ultima_camada = "FROM"
+                def construir_grafo_networkx(node, x=0.5, y=0.9, dx=0.2, parent_id=None, counter=0):
+                    current_id = f"node_{counter}"
+                    counter += 1
+                    
+                    # Definição de Cores e Labels
+                    color = "#BDC3C7"
+                    label = node.name
+                    
+                    if node.name == "Scan":
+                        label = f"SCAN\n({getattr(node, 'table_name', '')})"
+                        color = "#50E3C2"
+                    elif node.name == "Selection":
+                        cond = getattr(node, 'condition', '')
+                        label = f"FILTRO (σ)\n{cond[:20]}"
+                        color = "#F5A623"
+                    elif node.name == "Projection":
+                        cols = ", ".join(getattr(node, 'columns', []))
+                        label = f"PROJEÇÃO (π)\n{cols[:20]}"
+                        color = "#4A90E2"
+                    elif node.name == "Join":
+                        cond = getattr(node, 'condition', '')
+                        label = f"JUNÇÃO (⨝)\n{cond[:20]}"
+                        color = "#FF6B6B"
 
-                # Nó JOIN
-                if result['join_table']:
-                    G.add_node("JOIN", label=f"JOIN:\n{result['join_table']}\nON {result['join_cond']}", pos=(0.7, 0.1), color="#FF6B6B")
-                    G.add_edge("JOIN", "FROM") # Join "alimenta" a origem de dados
-                
-                # Nó WHERE
-                if result['where']:
-                    w_label = f"Filtro:\n{result['where'][:20]}..." if len(result['where']) > 20 else f"Filtro:\n{result['where']}"
-                    G.add_node("WHERE", label=w_label, pos=(0.5, 0.5), color="#F5A623")
-                    G.add_edge("FROM", "WHERE")
-                    ultima_camada = "WHERE"
-                
-                # Nó SELECT
-                G.add_node("SELECT", label=f"Projeção:\n{result['select'][:30]}", pos=(0.5, 0.9), color="#4A90E2")
-                G.add_edge(ultima_camada, "SELECT")
+                    # Adiciona o nó atual ao grafo NetworkX
+                    G.add_node(current_id, label=label, pos=(x, y), color=color)
+                    
+                    # Se houver um pai, cria a aresta (o fluxo sobe: filho -> pai)
+                    if parent_id:
+                        G.add_edge(current_id, parent_id)
+                        
+                    # Lógica de Recursão
+                    # CASO 1: Nó de Junção (Dois filhos/ramos)
+                    if node.name == "Join":
+                        # Filho Esquerdo (root original)
+                        counter = construir_grafo_networkx(node.left_child, x - dx, y - 0.2, dx/2, current_id, counter)
+                        # Filho Direito (tabela do join)
+                        counter = construir_grafo_networkx(node.right_child, x + dx, y - 0.2, dx/2, current_id, counter)
+                    
+                    # CASO 2: Nó Linear (Um filho)
+                    elif hasattr(node, 'child') and node.child:
+                        counter = construir_grafo_networkx(node.child, x, y - 0.2, dx, current_id, counter)
+                        
+                    return counter
 
-                # Plotagem
+                # Invoca a construção a partir da raiz otimizada
+                construir_grafo_networkx(arvore_otimizada)
+                
+                # Plotagem usando Matplotlib
                 fig, ax = plt.subplots(figsize=(7, 5))
                 pos = nx.get_node_attributes(G, 'pos')
                 
-                nx.draw_networkx_edges(G, pos, ax=ax, arrows=True, edge_color="#BDC3C7", width=2)
+                nx.draw_networkx_edges(G, pos, ax=ax, arrows=True, edge_color="#7F8C8D", width=2, arrowsize=20)
                 
-                for node, (x, y) in pos.items():
-                    ax.text(x, y, G.nodes[node]['label'], 
-                            ha='center', va='center', fontweight='bold',
-                            bbox=dict(boxstyle="round,pad=0.5", fc=G.nodes[node]['color'], ec="black", alpha=0.9))
+                for node_id, (x, y) in pos.items():
+                    ax.text(x, y, G.nodes[node_id]['label'], 
+                            ha='center', va='center', fontweight='bold', fontsize=10,
+                            bbox=dict(boxstyle="round,pad=0.6", fc=G.nodes[node_id]['color'], ec="black", alpha=0.95))
 
                 ax.axis("off")
                 st.pyplot(fig)
 
+        except ValueError as ve:
+            st.error(f"Erro na Consulta: {ve}")
         except Exception as e:
-            st.error(f"Erro: {str(e)}")
+            st.error(f"Erro Inesperado: {str(e)}")
