@@ -102,23 +102,38 @@ else:
 processar_btn = st.button("Processar Consulta", type="primary", use_container_width=True)
 
 # --- NOVA LÓGICA DE PROCESSAMENTO, VALIDAÇÃO E OTIMIZAÇÃO ---
+# --- LÓGICA DE PROCESSAMENTO ---
 if processar_btn:
     if not query.strip():
         st.warning("Insira uma consulta.")
     else:
         try:
-            # 1. PARSER
-            result = parse_sql(query)
+            # CORREÇÃO: Use a query_limpa que você criou!
+            query_limpa = " ".join(query.split())
+            result = parse_sql(query_limpa) 
             
-            # 2. VALIDAÇÃO DE SCHEMA (Garante 1,0 ponto)
-            validador = ValidarSchema(SCHEMA_VENDAS)
-            tabela_from = result['from'].lower()
-            
-            if tabela_from not in validador.schema:
-                st.error(f"Erro: A tabela '{tabela_from}' não existe no banco de dados.")
-                st.stop()
+            # Garanta que valores None virem strings vazias para não quebrar o .lower()
+            for chave in result:
+                if result[chave] is None:
+                    result[chave] = ""
 
-            # 3. OTIMIZAÇÃO (Garante os pontos de Heurísticas)
+            # 2. Validação
+            validador = ValidarSchema(SCHEMA_VENDAS)
+            if result['select'] != '*':
+                # Limpa os nomes das colunas (remove o 'tabela.' se houver)
+                colunas = [c.strip().split('.')[-1] for c in result['select'].split(',')]
+                for col in colunas:
+                    tabelas_na_query = [result['from']]
+                    if result.get('join_table'): 
+                        tabelas_na_query.append(result['join_table'])
+                    
+                    # Checa se a coluna existe em pelo menos uma das tabelas da query
+                    valido = any(col.lower() in [c.lower() for c in SCHEMA_VENDAS.get(t, [])] for t in tabelas_na_query)
+                    if not valido:
+                        st.error(f"Erro de Schema: A coluna '{col}' não existe nas tabelas selecionadas.")
+                        st.stop()
+
+            # 3. Se passou na validação, seguimos com a OTIMIZAÇÃO
             optimizer = Optimizer(result)
             arvore_otimizada = optimizer.build_optimized_tree()
             
