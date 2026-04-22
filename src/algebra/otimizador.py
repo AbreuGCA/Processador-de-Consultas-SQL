@@ -1,27 +1,39 @@
 from src.algebra.algebra_relacional import ScanNode, SelectionNode, ProjectionNode, JoinNode
 
+
 class Optimizer:
-    def __init__(self, parsed_query):
+
+    def __init__(self, parsed_query: dict):
         self.query = parsed_query
 
     def build_optimized_tree(self):
-        # 1. Base: Scan da tabela principal
+        # ── Base: Scan da tabela principal (nó folha esquerdo) ────────
         root = ScanNode(self.query['from'])
-        
-        # 2. Heurística: Integração de Junção (União de ramos)
-        if self.query.get('join_table'):
-            right_branch = ScanNode(self.query['join_table'])
-            # Cria o nó de Join unindo a tabela principal e a tabela do Join
-            root = JoinNode(self.query['join_cond'], root, right_branch)
-        
-        # 3. Heurística: Redução de Tuplas (Seleção logo após a origem/junção)
+
+        # ── H1: Seleção logo após a origem (antes da projeção) ────────
+        # Push-down da seleção → reduz tuplas o mais cedo possível
         if self.query.get('where'):
-            root = SelectionNode(self.query['where'], root)
-        
-        # 4. Heurística: Redução de Atributos (Projeção final)
+            root = SelectionNode(
+                condition=self.query['where'],
+                child=root
+            )
+
+        # ── H2: Projeção no topo (após filtrar tuplas) ─────────────────
+        # Push-down da projeção → elimina atributos desnecessários no final
         if self.query.get('select'):
             if self.query['select'].strip() != '*':
                 columns = [c.strip() for c in self.query['select'].split(',')]
-                root = ProjectionNode(columns, root)
-            
+                root = ProjectionNode(columns=columns, child=root)
+
+        # ── H3: INNER JOIN → evita Produto Cartesiano ─────────────────
+        # Se houver JOIN, cria um nó de junção com a tabela principal à esquerda
+        if self.query.get('join_table'):
+            right_branch = ScanNode(self.query['join_table'])
+            root = JoinNode(
+                condition=self.query['join_cond'],
+                left_child=root,
+                right_child=right_branch
+            )
+
         return root
+
