@@ -178,15 +178,16 @@ if processar_btn:
         st.caption("Verifique os nomes de tabelas e colunas na barra lateral.")
         st.stop()
 
-    # ETAPA 3: Otimização
+   # ETAPA 3: Otimização
     try:
         optimizer = Optimizer(result)
         arvore_otimizada = optimizer.build_optimized_tree()
+        arvore_nao_otimizada = optimizer.build_unoptimized_tree() # <-- NOVO
     except Exception as e:
         st.error(f"❌ **Erro no Otimizador:** {e}")
         st.stop()
 
-    # ETAPA 4: Plano de Execução
+    # ETAPA 4: Plano de Execução (baseado na otimizada para o texto)
     graph_manager = QueryGraph(arvore_otimizada)
     passos = graph_manager.generate_execution_steps()
 
@@ -250,7 +251,7 @@ if processar_btn:
 
     # ── Coluna Direita: Grafo ─────────────────────────────────────────────────
     with col_dir:
-        st.subheader("🌳 Grafo de Operadores Otimizado")
+        st.subheader("🌳 Grafos de Operadores")
 
         # Legenda
         leg = st.columns(4)
@@ -258,30 +259,46 @@ if processar_btn:
         with leg[1]: st.markdown("🟧 **σ** Seleção")
         with leg[2]: st.markdown("🟦 **π** Projeção")
         with leg[3]: st.markdown("🟥 **⨝** Junção")
+        
+        st.write("") # Espaço em branco
+        
+        # Abas para alternar entre os grafos
+        aba_otimizada, aba_canonica = st.tabs(["Grafo Otimizado (Heurísticas)", "Grafo Não Otimizado (Canônico)"])
 
-        # Grafo NetworkX
-        G = nx.DiGraph()
-        construir_grafo_networkx(G, arvore_otimizada)
+        # Função auxiliar para desenhar o grafo
+        def desenhar_plot_grafo(arvore_root):
+            G = nx.DiGraph()
+            construir_grafo_networkx(G, arvore_root)
 
-        fig, ax = plt.subplots(figsize=(7, 5))
-        fig.patch.set_alpha(0)
-        ax.set_facecolor("none")
+            fig, ax = plt.subplots(figsize=(7, 5))
+            fig.patch.set_alpha(0)
+            ax.set_facecolor("none")
 
-        pos = nx.get_node_attributes(G, 'pos')
-        nx.draw_networkx_edges(
-            G, pos, ax=ax, arrows=True,
-            edge_color="#7F8C8D", width=2, arrowsize=20,
-        )
-        for node_id, (x, y) in pos.items():
-            ax.text(
-                x, y, G.nodes[node_id]['label'],
-                ha='center', va='center', fontweight='bold', fontsize=9,
-                bbox=dict(
-                    boxstyle="round,pad=0.5",
-                    fc=G.nodes[node_id]['color'],
-                    ec="black", alpha=0.95
-                )
+            pos = nx.get_node_attributes(G, 'pos')
+            nx.draw_networkx_edges(
+                G, pos, ax=ax, arrows=True,
+                edge_color="#7F8C8D", width=2, arrowsize=20,
             )
+            for node_id, (x, y) in pos.items():
+                ax.text(
+                    x, y, G.nodes[node_id]['label'],
+                    ha='center', va='center', fontweight='bold', fontsize=9,
+                    bbox=dict(
+                        boxstyle="round,pad=0.5",
+                        fc=G.nodes[node_id]['color'],
+                        ec="black", alpha=0.95
+                    )
+                )
 
-        ax.axis("off")
-        st.pyplot(fig)
+            ax.axis("off")
+            return fig
+
+        with aba_otimizada:
+            st.caption("Aplica seleções e projeções o mais cedo possível para diminuir carga antes do JOIN.")
+            fig_opt = desenhar_plot_grafo(arvore_otimizada)
+            st.pyplot(fig_opt)
+            
+        with aba_canonica:
+            st.caption("Faz as junções primeiro e só aplica as projeções e seleções no final.")
+            fig_unopt = desenhar_plot_grafo(arvore_nao_otimizada)
+            st.pyplot(fig_unopt)
