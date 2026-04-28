@@ -15,3 +15,6 @@ __pycache__/
 # Sistema operacional
 .DS_Store
 Thumbs.db
+
+# Arquivos explicativo
+DOCUMENTACAO_PROJETO.md
