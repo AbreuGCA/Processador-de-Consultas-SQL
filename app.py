@@ -53,12 +53,13 @@ def validar_consulta_completa(result: dict, validador: ValidarSchema) -> list:
     tabelas_envolvidas = [tabela_from]
     validador.validar_tabela(tabela_from)
 
-    if result.get('join_table'):
-        tabela_join = result['join_table'].lower()
+    # Valida todos os JOINs
+    for join in result.get('joins', []):
+        tabela_join = join['table'].lower()
         validador.validar_tabela(tabela_join)
         tabelas_envolvidas.append(tabela_join)
-        if result.get('join_cond'):
-            for cond in extrair_condicoes(result['join_cond']):
+        if join.get('cond'):
+            for cond in extrair_condicoes(join['cond']):
                 col = extrair_coluna_de_condicao(cond)
                 if col:
                     validador.validar_coluna_condicao(col, tabelas_envolvidas, contexto="JOIN ON")
@@ -205,13 +206,12 @@ if processar_btn:
         t = result['from']
         c = result['select']
         w = result.get('where', '')
-        join_t = result.get('join_table', '')
-        join_c = result.get('join_cond', '')
+        joins = result.get('joins', [])
 
-        if join_t:
-            inner = f"({t} \\bowtie_{{{join_c}}} {join_t})"
-        else:
-            inner = t
+        # Monta expressão de JOINs aninhados
+        inner = t
+        for join in joins:
+            inner = f"({inner} \\bowtie_{{{join['cond']}}} {join['table']})"
         if w:
             inner = f"\\sigma_{{{w}}}({inner})"
         if c and c.strip() != '*':
@@ -240,8 +240,8 @@ if processar_btn:
             heuristicas.append("**H1 — Redução de Tuplas:** σ aplicada antes da π")
         if c and c.strip() != '*':
             heuristicas.append("**H2 — Redução de Atributos:** π elimina colunas desnecessárias")
-        if result.get('join_table'):
-            heuristicas.append("**H3 — Evitar Produto Cartesiano:** ⨝ com condição ON explícita")
+        if joins:
+            heuristicas.append("**H3 — Evitar Produto Cartesiano:** ⨝ com condição ON explícita para todos os JOINs")
 
         if heuristicas:
             for h in heuristicas:

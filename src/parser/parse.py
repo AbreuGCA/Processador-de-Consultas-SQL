@@ -5,11 +5,9 @@ OPERADORES_PERMITIDOS = {'=', '>', '<', '<=', '>=', '<>'}
 
 
 def parse_sql(query: str) -> dict:
+    # para garantir que ele pare apenas na palavra WHERE inteira.
     pattern = re.compile(
-        r"SELECT\s+(?P<select>.*?)\s+"
-        r"FROM\s+(?P<from>\w+)"
-        r"(?:\s+INNER\s+JOIN\s+(?P<join_table>\w+)\s+ON\s+(?P<join_cond>.*?))?"
-        r"(?:\s+WHERE\s+(?P<where>.*?))?\s*$",
+        r"SELECT\s+(?P<select>.*?)\s+FROM\s+(?P<from>\w+)(?P<joins>(?:\s+INNER\s+JOIN\s+\w+\s+ON\s+(?:(?!\bWHERE\b).)*?)*)\s*(?:WHERE\s+(?P<where>.*?))?\s*$",
         re.IGNORECASE | re.DOTALL
     )
 
@@ -19,21 +17,31 @@ def parse_sql(query: str) -> dict:
             "Formato SQL inválido.\n"
             "Sintaxe esperada:\n"
             "  SELECT colunas FROM tabela\n"
-            "  [INNER JOIN tabela2 ON condição]\n"
+            "  [INNER JOIN tabela2 ON condição] ...\n"
             "  [WHERE condição]"
         )
 
     result = match.groupdict()
 
-    # Valida operadores na cláusula ON (JOIN)
-    if result.get('join_cond'):
-        _validar_operadores(result['join_cond'], clausula="ON")
+    joins = []
+    joins_str = result.get('joins') or ''
+    # Ajustando o sub-regex do JOIN também para não usar [^I]+? (que quebra com a letra 'I')
+    join_pattern = re.compile(r"INNER\s+JOIN\s+(\w+)\s+ON\s+((?:(?!\bINNER\s+JOIN\b).)+)", re.IGNORECASE | re.DOTALL)
+    for m in join_pattern.finditer(joins_str):
+        join_table = m.group(1)
+        join_cond = m.group(2).strip()
+        joins.append({'table': join_table, 'cond': join_cond})
+        _validar_operadores(join_cond, clausula="ON")
 
-    # Valida operadores na cláusula WHERE
     if result.get('where'):
         _validar_operadores(result['where'], clausula="WHERE")
 
-    return result
+    return {
+        'select': result['select'],
+        'from': result['from'],
+        'joins': joins,
+        'where': result.get('where')
+    }
 
 # Valida operadores em uma condição composta, rejeitando palavras-chave e operadores não permitidos
 def _validar_operadores(condicao: str, clausula: str):
@@ -78,5 +86,16 @@ def extrair_condicoes(where_str: str) -> list:
 
 # Extrai a coluna de uma condição simples
 def extrair_coluna_de_condicao(condicao: str):
-    match = re.match(r'\s*([\w.]+)\s*(?:<=|>=|<>|<|>|=)', condicao)
-    return match.group(1).strip() if match else None
+    partes = re.split(r'<=|>=|<>|<|>|=', condicao)
+    
+    if len(partes) != 2:
+        return None
+        
+    esq = partes[0].strip()
+    dir = partes[1].strip()
+    
+    if esq.startswith("'") or esq.startswith('"') or esq.replace('.', '', 1).isdigit():
+        return dir
+        
+    # Caso contrário, assumimos que a coluna está à esquerda (Ex: Preco > 100).
+    return esq
