@@ -1,61 +1,93 @@
 from src.algebra.algebra_relacional import ScanNode, SelectionNode, ProjectionNode, JoinNode
 from src.parser.parse import extrair_condicoes, extrair_coluna_de_condicao
+import re
 
 class Optimizer:
-
     def __init__(self, parsed_query: dict):
         self.query = parsed_query
 
-    def build_optimized_tree(self):        
-        # 1. Separar e agrupar as condições do WHERE por tabela
+    def _get_required_columns_per_table(self):
+        """Identifica todas as colunas necessárias de cada tabela para a consulta."""
+        needed = {}
+        tabela_from = self.query['from'].lower()
+        
+        # 1. Colunas do SELECT
+        if self.query['select'].strip() != '*':
+            cols_select = [c.strip() for c in self.query['select'].split(',')]
+            for col in cols_select:
+                self._add_to_needed(col, needed, tabela_from)
+
+        # 2. Colunas do WHERE
+        conds_where = extrair_condicoes(self.query.get('where', ''))
+        for cond in conds_where:
+            col = extrair_coluna_de_condicao(cond)
+            if col: self._add_to_needed(col, needed, tabela_from)
+
+        # 3. Colunas do JOIN (condições ON)
+        for join in self.query.get('joins', []):
+            # Extrai colunas de ambos os lados da condição de join (ex: t1.id = t2.id_ext)
+            cond_join = join['cond']
+            parts = re.split(r'<=|>=|<>|<|>|=', cond_join)
+            for p in parts:
+                potential_col = p.strip()
+                if not (potential_col.startswith("'") or potential_col.isdigit()):
+                    self._add_to_needed(potential_col, needed, tabela_from)
+        
+        return needed
+
+    def _add_to_needed(self, col, needed, default_tab):
+        """Auxiliar para mapear coluna à sua respectiva tabela."""
+        if '.' in col:
+            tab, c = col.split('.', 1)
+            tab = tab.lower()
+        else:
+            tab = default_tab
+        if tab not in needed: needed[tab] = set()
+        needed[tab].add(c.lower())
+
+    def build_optimized_tree(self):
+        # Mapeia colunas necessárias por tabela (Heurística de Redução de Atributos antecipada)
+        colunas_por_tabela = self._get_required_columns_per_table()
+        
+        # Agrupa condições do WHERE por tabela (Redução de Tuplas)
         condicoes_por_tabela = {}
         todas_condicoes = extrair_condicoes(self.query.get('where', ''))
         tabela_from = self.query['from'].lower()
         
         for cond in todas_condicoes:
             coluna = extrair_coluna_de_condicao(cond)
-            if not coluna: 
-                continue
+            if not coluna: continue
+            tab_alvo = coluna.split('.')[0].lower() if '.' in coluna else tabela_from
+            if tab_alvo not in condicoes_por_tabela: condicoes_por_tabela[tab_alvo] = []
+            condicoes_por_tabela[tab_alvo].append(cond)
+
+        # Função para criar o ramo de uma tabela com push-down de Seleção e Projeção
+        def criar_ramo_tabela(nome_tabela):
+            nome_tabela_lower = nome_tabela.lower()
+            node = ScanNode(nome_tabela)
             
-            # Se a coluna for qualificada (tabela.coluna), pegamos o nome da tabela
-            if '.' in coluna:
-                tabela_alvo = coluna.split('.')[0].lower()
-            else:
-                # Se não for qualificada, assumimos que pertence à tabela FROM (tabela principal)
-                tabela_alvo = tabela_from 
-                
-            if tabela_alvo not in condicoes_por_tabela:
-                condicoes_por_tabela[tabela_alvo] = []
-            condicoes_por_tabela[tabela_alvo].append(cond)
+            # Heurística 1: Redução de Tuplas (Seleção antecipada)
+            if nome_tabela_lower in condicoes_por_tabela:
+                cond = " AND ".join(condicoes_por_tabela[nome_tabela_lower])
+                node = SelectionNode(condition=cond, child=node)
+            
+            # Heurística 2: Redução de Atributos (Projeção antecipada em TODO Scan)
+            if nome_tabela_lower in colunas_por_tabela:
+                node = ProjectionNode(columns=list(colunas_por_tabela[nome_tabela_lower]), child=node)
+            
+            return node
 
-        # 2. Criar ScanNode da tabela principal e aplicar a seleção DELA logo em seguida
-        root = ScanNode(self.query['from'])
-        if tabela_from in condicoes_por_tabela:
-            cond_from = " AND ".join(condicoes_por_tabela[tabela_from])
-            root = SelectionNode(condition=cond_from, child=root)
+        # Montagem da Árvore
+        root = criar_ramo_tabela(self.query['from'])
 
-        # 3. Aplicar JOINs com as tabelas da direita (também aplicando seleções antes de juntar)
         for join in self.query.get('joins', []):
-            tabela_join = join['table']
-            right_branch = ScanNode(tabela_join)
-            tabela_join_lower = tabela_join.lower()
-            
-            # Se houver um WHERE filtrando dados dessa tabela do JOIN, aplica o filtro NELA primeiro
-            if tabela_join_lower in condicoes_por_tabela:
-                cond_join = " AND ".join(condicoes_por_tabela[tabela_join_lower])
-                right_branch = SelectionNode(condition=cond_join, child=right_branch)
+            right_branch = criar_ramo_tabela(join['table'])
+            root = JoinNode(condition=join['cond'], left_child=root, right_child=right_branch)
 
-            root = JoinNode(
-                condition=join['cond'],
-                left_child=root,
-                right_child=right_branch
-            )
-
-        # 4. Projeção (permanece no topo, após os dados já estarem reduzidos)
-        if self.query.get('select'):
-            if self.query['select'].strip() != '*':
-                columns = [c.strip() for c in self.query['select'].split(',')]
-                root = ProjectionNode(columns=columns, child=root)
+        # Projeção Final (apenas se não for SELECT *)
+        if self.query['select'].strip() != '*':
+            columns = [c.strip() for c in self.query['select'].split(',')]
+            root = ProjectionNode(columns=columns, child=root)
 
         return root
 

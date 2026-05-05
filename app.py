@@ -2,6 +2,10 @@ import streamlit as st
 import networkx as nx
 import matplotlib.pyplot as plt
 
+import streamlit.components.v1 as components
+from pyvis.network import Network
+import tempfile
+
 from src.parser.parse import parse_sql, extrair_condicoes, extrair_coluna_de_condicao
 from src.data.dic_dados import SCHEMA_VENDAS
 from src.algebra.otimizador import Optimizer
@@ -293,12 +297,67 @@ if processar_btn:
             ax.axis("off")
             return fig
 
+        def renderizar_grafo_dinamico(arvore_root):
+            net = Network(height="500px", width="100%", directed=True, bgcolor="#ffffff", font_color="#34495e")
+            net.set_options("""
+            {
+              "layout": {
+                "hierarchical": {
+                  "enabled": true,
+                  "direction": "UD",
+                  "sortMethod": "directed",
+                  "nodeSpacing": 200,
+                  "levelSeparation": 150
+                }
+              },
+              "physics": {
+                "enabled": false
+              },
+              "edges": {
+                "color": "#7F8C8D",
+                "smooth": {"type": "cubicBezier"}
+              }
+            }
+            """)
+
+            def adicionar_nos_pyvis(node, parent_id=None):
+                node_id = str(id(node))
+                label = node.name
+                color = "#95a5a6"
+                if node.name == "Scan":
+                    label = f"SCAN\n({getattr(node, 'table_name', '')})"
+                    color = "#2ecc71"
+                elif node.name == "Selection":
+                    label = f"σ (Seleção)\n{getattr(node, 'condition', '')}"
+                    color = "#e67e22"
+                elif node.name == "Projection":
+                    label = f"π (Projeção)\n{', '.join(getattr(node, 'columns', []))}"
+                    color = "#3498db"
+                elif node.name == "Join":
+                    label = f"⨝ (Join)\n{getattr(node, 'condition', '')}"
+                    color = "#9b59b6"
+                net.add_node(node_id, label=label, color=color, shape="box", margin=10)
+                if parent_id:
+                    net.add_edge(node_id, parent_id)
+                if node.name == "Join":
+                    adicionar_nos_pyvis(node.left_child, node_id)
+                    adicionar_nos_pyvis(node.right_child, node_id)
+                elif hasattr(node, 'child') and node.child:
+                    adicionar_nos_pyvis(node.child, node_id)
+
+            adicionar_nos_pyvis(arvore_root)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+                net.save_graph(tmp.name)
+                with open(tmp.name, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                components.html(html_content, height=550)
+
         with aba_otimizada:
-            st.caption("Aplica seleções e projeções o mais cedo possível para diminuir carga antes do JOIN.")
-            fig_opt = desenhar_plot_grafo(arvore_otimizada)
-            st.pyplot(fig_opt)
-            
+            st.subheader("Plano de Execução Otimizado")
+            st.caption("Interaja com o grafo: arraste os nós para organizar ou use o scroll para zoom.")
+            renderizar_grafo_dinamico(arvore_otimizada)
+
         with aba_canonica:
+            st.subheader("Plano de Execução Canônico")
             st.caption("Faz as junções primeiro e só aplica as projeções e seleções no final.")
-            fig_unopt = desenhar_plot_grafo(arvore_nao_otimizada)
-            st.pyplot(fig_unopt)
+            renderizar_grafo_dinamico(arvore_nao_otimizada)
